@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">电池蓝牙</string>
+    <string name="widget_desc">显示电池剩余电量与充放电状态</string>
+</resources>

@@ -1,0 +1,7 @@
+build/
+*.apk
+*.idsig
+*.jks
+tools/
+work/
+jadx-out/
