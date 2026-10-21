@@ -178,7 +178,14 @@ public class BmsService extends Service {
     private void startForegroundCompat(Notification n) {
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                startForeground(NOTIF_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE);
+                // 拿到位置权限才声明 location 类型,否则 Android 14 会直接崩
+                int type = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE;
+                boolean hasLocation = checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION)
+                        == android.content.pm.PackageManager.PERMISSION_GRANTED;
+                if (hasLocation) {
+                    type |= ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION;
+                }
+                startForeground(NOTIF_ID, n, type);
             } else {
                 startForeground(NOTIF_ID, n);
             }

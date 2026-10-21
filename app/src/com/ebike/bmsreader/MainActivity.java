@@ -2,6 +2,7 @@ package com.ebike.bmsreader;
 
 import android.Manifest;
 import android.bluetooth.BluetoothAdapter;
+import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
@@ -33,6 +34,7 @@ public class MainActivity extends android.app.Activity implements BmsClient.List
     private static final int REQ_PERMS = 1001;
 
     private BmsHub hub;
+    private EcoTracker ecoTracker;
     private LinearLayout deviceBox;
     private LinearLayout dataBox;
     private TextView statusView;
@@ -42,6 +44,8 @@ public class MainActivity extends android.app.Activity implements BmsClient.List
     private Button autoBtn;
     private TextView lastDeviceView;
     private final StringBuilder logLines = new StringBuilder();
+    private LinearLayout ecoBox;
+    private TextView ecoStateView;
 
     private final List<BmsClient.Found> devices = new ArrayList<>();
 
@@ -52,6 +56,16 @@ public class MainActivity extends android.app.Activity implements BmsClient.List
         BmsWidgetProvider.selfCheck(this);
         hub = BmsHub.get(this);
         hub.addListener(this);
+        // 省电分析器:常驻挂在 Hub 监听链上,不随界面销毁,后台也继续统计
+        EcoTracker.get(this)
+                .ensureListening(hub);
+        ecoTracker = EcoTracker.get(this);
+        ecoTracker.setUiListener(new EcoTracker.UiListener() {
+            @Override
+            public void onEcoUpdated(EcoTracker.Stats stats) {
+                updateEcoUi(stats);
+            }
+        });
         requestNeededPermissions();
     }
 
@@ -66,11 +80,16 @@ public class MainActivity extends android.app.Activity implements BmsClient.List
         if (!ensureBluetooth()) {
             statusView.setText("蓝牙未开启,请打开后重试");
         }
+        updateEcoUi(EcoTracker.get(this).snapshot());
     }
 
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        if (ecoTracker != null) {
+            ecoTracker.setUiListener(null);
+            ecoTracker.save();
+        }
         if (hub != null) {
             hub.removeListener(this);
         }
@@ -104,9 +123,25 @@ public class MainActivity extends android.app.Activity implements BmsClient.List
                 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             missing.add(Manifest.permission.POST_NOTIFICATIONS);
         }
+        // 省电分析需要 GPS 速度,任何版本都要精确位置权限
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+                && checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            missing.add(Manifest.permission.ACCESS_FINE_LOCATION);
+        }
         if (!missing.isEmpty()) {
             requestPermissions(missing.toArray(new String[0]), REQ_PERMS);
         }
+        if (permGranted(this, Manifest.permission.ACCESS_FINE_LOCATION)) {
+            EcoTracker.get(this).ensureGps();
+        }
+    }
+
+    private static boolean permGranted(Context c, String p) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            // 老版本安装时静态授权
+            return true;
+        }
+        return c.checkSelfPermission(p) == PackageManager.PERMISSION_GRANTED;
     }
 
     private boolean ensureBluetooth() {
@@ -119,6 +154,21 @@ public class MainActivity extends android.app.Activity implements BmsClient.List
             return false;
         }
         return true;
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode != REQ_PERMS) {
+            return;
+        }
+        for (int i = 0; i < permissions.length; i++) {
+            if (Manifest.permission.ACCESS_FINE_LOCATION.equals(permissions[i])
+                    && grantResults[i] == PackageManager.PERMISSION_GRANTED) {
+                // 位置权限到手:立刻启动 GPS,开始在骑行中采样
+                EcoTracker.get(this).ensureGps();
+            }
+        }
     }
 
     // ------------------------------------------------------------------
@@ -239,6 +289,44 @@ public class MainActivity extends android.app.Activity implements BmsClient.List
         dataBox.setBackgroundColor(0xFF1B2229);
         root.addView(dataBox);
         renderEmpty();
+
+        // -------- 速度省电分析区块 --------
+        TextView ecoTitle = text("速度省电分析", 16, 0xFF80CBC4);
+        ecoTitle.setPadding(0, dp(14), 0, dp(4));
+        root.addView(ecoTitle);
+
+        ecoBox = new LinearLayout(this);
+        ecoBox.setOrientation(LinearLayout.VERTICAL);
+        ecoBox.setPadding(dp(12), dp(12), dp(12), dp(12));
+        ecoBox.setBackgroundColor(0xFF1B2229);
+        root.addView(ecoBox);
+
+        ecoStateView = text("", 12, 0xFF78909C);
+        ecoStateView.setPadding(0, dp(6), 0, 0);
+        root.addView(ecoStateView);
+
+        Button ecoClearBtn = new Button(this);
+        ecoClearBtn.setText("清零统计数据");
+        ecoClearBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                new android.app.AlertDialog.Builder(MainActivity.this)
+                        .setTitle("清零")
+                        .setMessage("要清空省电分析的累计数据吗?")
+                        .setPositiveButton("清零", new android.content.DialogInterface.OnClickListener() {
+                            @Override
+                            public void onClick(android.content.DialogInterface d, int w) {
+                                EcoTracker.get(MainActivity.this).reset();
+                                EcoTracker.get(MainActivity.this).save();
+                                Toast.makeText(MainActivity.this, "已清零", Toast.LENGTH_SHORT).show();
+                            }
+                        })
+                        .setNegativeButton("取消", null)
+                        .show();
+            }
+        });
+        root.addView(ecoClearBtn, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         diagView = text("诊断: 尚未开始", 13, 0xFFFFB74D);
         diagView.setPadding(0, dp(10), 0, 0);
@@ -554,6 +642,99 @@ public class MainActivity extends android.app.Activity implements BmsClient.List
             updateCellSection(info.cellVoltages);
             lastCells = info.cellVoltages;
         }
+    }
+
+    // ------------------------------------------------------------------
+    // 速度省电分析
+    // ------------------------------------------------------------------
+
+    private void updateEcoUi(EcoTracker.Stats s) {
+        if (ecoBox == null || ecoStateView == null) {
+            return;
+        }
+        ecoBox.removeAllViews();
+
+        ecoBox.addView(text("说明:骑行时自动记录各速度档的实际能耗,累计越多越准。(速度来自手机GPS,需允许定位)", 12, 0xFF78909C));
+
+        // 表头
+        LinearLayout head = new LinearLayout(this);
+        head.setOrientation(LinearLayout.HORIZONTAL);
+        int[] weight = {3, 3, 3, 2};
+        String[] cols = {"速度区间", "平均功率", "能耗Wh/km", "时长"};
+        for (int i = 0; i < cols.length; i++) {
+            TextView t = text(cols[i], 12, 0xFF90A4AE);
+            t.setGravity(Gravity.CENTER);
+            t.setLayoutParams(new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, weight[i]));
+            head.addView(t);
+        }
+        ecoBox.addView(head, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        boolean anyData = false;
+        for (int i = 0; i < EcoTracker.BIN_COUNT; i++) {
+            EcoTracker.Bucket b = s.bins[i];
+            if (b.secs <= 0) {
+                continue;
+            }
+            anyData = true;
+            String bestTag = (i == s.bestBin) ? " ◀最省电" : "";
+            String kmh = EcoTracker.binLabel(i);
+            float avgW = b.secs > 0 ? b.wh * 3600f / b.secs : 0;
+            float whkm = b.km > 0.001f ? b.wh / b.km : 0;
+            String secs = b.secs >= 3600
+                    ? String.format(Locale.US, "%.1fh", b.secs / 3600f)
+                    : (b.secs >= 60 ? String.format(Locale.US, "%.1fmin", b.secs / 60f)
+                    : String.format(Locale.US, "%ds", b.secs));
+
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            int bg = (i == s.bestBin) ? 0xFF23331F : 0xFF222B33;
+            String[] strs = {
+                    kmh + bestTag,
+                    String.format(Locale.US, "%.0f W", avgW),
+                    String.format(Locale.US, "%.1f", whkm),
+                    secs
+            };
+            int[] colors = {
+                    i == s.bestBin ? 0xFF9CCC65 : 0xFFECEFF1,
+                    0xFFECEFF1,
+                    i == s.bestBin ? 0xFF9CCC65 : 0xFF4FC3F7,
+                    0xFF90A4AE
+            };
+            for (int c = 0; c < strs.length; c++) {
+                TextView t = text(strs[c], 13, colors[c]);
+                t.setGravity(Gravity.CENTER);
+                t.setLayoutParams(new LinearLayout.LayoutParams(0,
+                        ViewGroup.LayoutParams.WRAP_CONTENT, new float[]{3f, 3f, 3f, 2f}[c]));
+                row.addView(t);
+            }
+            row.setPadding(0, dp(3), 0, dp(3));
+            row.setBackgroundColor(bg);
+            ecoBox.addView(row, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        }
+        if (!anyData) {
+            ecoBox.addView(text("还没有数据。连接电池后开始骑行,会自动统计各档能耗。",
+                    13, 0xFF78909C));
+        }
+
+        String stateLine;
+        if (s.curKmh > 0) {
+            stateLine = String.format(Locale.US, "统计中:当前 %.0f km/h · 累计 %.2f km / %s",
+                    s.curKmh, s.totalKm, fmtSecs(s.totalSecs));
+        } else {
+            stateLine = String.format(Locale.US, "统计已累计 %.2f km / %s %s",
+                    s.totalKm, fmtSecs(s.totalSecs),
+                    EcoTracker.get(this).isGpsRunning() ? "(GPS已就绪)" : "(GPS未就绪:请给本App位置权限)");
+        }
+        ecoStateView.setText(stateLine);
+    }
+
+    private static String fmtSecs(long s) {
+        if (s >= 3600) {
+            return String.format(Locale.US, "%.1fh", s / 3600f);
+        }
+        return String.format(Locale.US, "%.0fmin", s / 60f);
     }
 
     private void appendLog(String line) {
