@@ -66,7 +66,7 @@ final class RideGps {
             return true;
         }
         boolean granted = Build.VERSION.SDK_INT < Build.VERSION_CODES.M
-                || ctx.checkSelfPermission(Manifest.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED;
+                || ctx.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED;
         if (!granted) {
             return false;
         }
