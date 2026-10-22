@@ -8,8 +8,18 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      BMS_KEYSTORE_B64: ${{ secrets.BMS_KEYSTORE_B64 }}
+      SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+      SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
+
+      # 固定签名密钥解码到 worksapce 外的 /tmp,不留在产物目录
+      - name: 准备签名密钥
+        run: |
+          echo "$BMS_KEYSTORE_B64" | base64 -d > /tmp/bmsreader.keystore
+          echo "BMS_KEYSTORE=/tmp/bmsreader.keystore" >> "$GITHUB_ENV"
 
       - uses: actions/setup-java@v4
         with:
