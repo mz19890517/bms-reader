@@ -20,9 +20,9 @@ import java.util.List;
  */
 public class EcoTracker implements BmsClient.Listener {
 
-    /** 速度档宽 5km/h:0-5,5-10,...,30-35,35+ 共 8 档。 */
+    /** 速度档宽 5km/h:0-5,5-10,...,95-100,100+ 共 21 档(覆盖高速电摩,空档不显示)。 */
     static final int BIN_KMH = 5;
-    static final int BIN_COUNT = 8;
+    static final int BIN_COUNT = 21;
 
     /** 节流:至少间隔 1 秒记一个样本;两个 BMS 包间隔超过 5 秒当新一段。 */
     private static final long SAMPLE_INTERVAL_MS = 1000L;
