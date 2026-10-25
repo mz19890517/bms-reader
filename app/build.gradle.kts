@@ -10,8 +10,8 @@ android {
         applicationId = "com.ebike.bmsreader"
         minSdk = 21
         targetSdk = 34
-        versionCode = 4
-        versionName = "1.2.1"
+        versionCode = 5
+        versionName = "1.2.2"
     }
 
     // 原 Eclipse ADT 目录结构: manifest 在 app/,源码在 app/src/,资源在 app/res/

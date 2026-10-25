@@ -12,15 +12,16 @@ import android.os.Handler;
 import android.os.Looper;
 
 /**
- * GPS 速度源:用系统 LocationManager 取速度,不依赖 Google 服务。
- * 每次定位回调把 speed(m/s) 换算成 km/h 抛给回调,回调统一在主线程。
+ * GPS 速度源:只订阅 GPS_PROVIDER(网络定位没有可靠速度),500ms 出点。
+ * 回调统一抛原始 Location,由使用方决定如何用(速度显示 / 位移计算)。
  */
 final class RideGps {
 
     interface Callback {
-        /** kmh:当前 GPS 速度;valid:false 表示本次回调不可当速度用(如 GpsFix 刚拿到)。 */
-        void onSpeed(float kmh);
+        void onFix(Location location);
     }
+
+    private static final long MIN_INTERVAL_MS = 500L;
 
     private final Context ctx;
     private final Handler main;
@@ -31,10 +32,9 @@ final class RideGps {
             main.post(new Runnable() {
                 @Override
                 public void run() {
-                    if (location == null) {
-                        return;
+                    if (location != null) {
+                        callback.onFix(location);
                     }
-                    callback.onSpeed(location.getSpeed() * 3.6f);
                 }
             });
         }
@@ -71,26 +71,33 @@ final class RideGps {
             return false;
         }
         LocationManager lm = (LocationManager) ctx.getSystemService(Context.LOCATION_SERVICE);
-        if (lm == null) {
+        if (lm == null || !lm.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
             return false;
         }
-        boolean ok = false;
-        if (lm.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
-            try {
-                lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0.5f, listener, Looper.getMainLooper());
-                ok = true;
-            } catch (Exception ignored) {
-                // 权限/provider 异常,退回下面的通用 provider
-            }
-        }
         try {
-            lm.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 1000L, 0.5f, listener, Looper.getMainLooper());
-            ok = true;
+            lm.requestLocationUpdates(LocationManager.GPS_PROVIDER,
+                    MIN_INTERVAL_MS, 0f, listener, Looper.getMainLooper());
+            running = true;
         } catch (Exception ignored) {
-            // 没有 network provider 也无所谓,gps 成了就行
+            return false;
         }
-        running = ok;
-        return ok;
+        // 先用最近一次定位点垫上,避免界面等首点
+        try {
+            final Location last = lm.getLastKnownLocation(LocationManager.GPS_PROVIDER);
+            if (last != null) {
+                main.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (running) {
+                            callback.onFix(last);
+                        }
+                    }
+                });
+            }
+        } catch (Exception ignored) {
+            // 权限/无历史点,等新点位
+        }
+        return true;
     }
 
     void stop() {

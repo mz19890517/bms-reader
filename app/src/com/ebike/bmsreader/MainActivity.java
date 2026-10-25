@@ -80,6 +80,8 @@ public class MainActivity extends android.app.Activity implements BmsClient.List
         if (!ensureBluetooth()) {
             statusView.setText("蓝牙未开启,请打开后重试");
         }
+        // 定位可能上次没开/刚授权,每次回到前台再试一次(内部幂等)
+        EcoTracker.get(this).ensureGps();
         updateEcoUi(EcoTracker.get(this).snapshot());
     }
 
@@ -679,12 +681,12 @@ public class MainActivity extends android.app.Activity implements BmsClient.List
             anyData = true;
             String bestTag = (i == s.bestBin) ? " ◀最省电" : "";
             String kmh = EcoTracker.binLabel(i);
-            float avgW = b.secs > 0 ? b.wh * 3600f / b.secs : 0;
+            float avgW = b.secs > 0 ? b.wh * 3_600_000f / b.secs : 0;
             float whkm = b.km > 0.001f ? b.wh / b.km : 0;
-            String secs = b.secs >= 3600
-                    ? String.format(Locale.US, "%.1fh", b.secs / 3600f)
-                    : (b.secs >= 60 ? String.format(Locale.US, "%.1fmin", b.secs / 60f)
-                    : String.format(Locale.US, "%ds", b.secs));
+            String secs = b.secs >= 3_600_000L
+                    ? String.format(Locale.US, "%.1fh", b.secs / 3_600_000f)
+                    : (b.secs >= 60_000L ? String.format(Locale.US, "%.1fmin", b.secs / 60_000f)
+                    : String.format(Locale.US, "%ds", b.secs / 1000L));
 
             LinearLayout row = new LinearLayout(this);
             row.setOrientation(LinearLayout.HORIZONTAL);
@@ -719,22 +721,30 @@ public class MainActivity extends android.app.Activity implements BmsClient.List
         }
 
         String stateLine;
-        if (s.curKmh > 0) {
-            stateLine = String.format(Locale.US, "统计中:当前 %.0f km/h · 累计 %.2f km / %s",
+        if (!s.gpsRunning) {
+            stateLine = String.format(Locale.US, "GPS未启动(请给本App定位权限) · 累计 %.2f km / %s",
+                    s.totalKm, fmtSecs(s.totalSecs));
+        } else if (s.curKmh > 0) {
+            stateLine = String.format(Locale.US, "骑行统计中:当前 %.0f km/h · 累计 %.2f km / %s",
                     s.curKmh, s.totalKm, fmtSecs(s.totalSecs));
+        } else if (s.gpsFresh) {
+            stateLine = String.format(Locale.US, "未骑行(当前静止) · 累计 %.2f km / %s",
+                    s.totalKm, fmtSecs(s.totalSecs));
         } else {
-            stateLine = String.format(Locale.US, "统计已累计 %.2f km / %s %s",
-                    s.totalKm, fmtSecs(s.totalSecs),
-                    EcoTracker.get(this).isGpsRunning() ? "(GPS已就绪)" : "(GPS未就绪:请给本App位置权限)");
+            stateLine = String.format(Locale.US, "等待GPS定位… · 累计 %.2f km / %s",
+                    s.totalKm, fmtSecs(s.totalSecs));
         }
         ecoStateView.setText(stateLine);
     }
 
-    private static String fmtSecs(long s) {
-        if (s >= 3600) {
-            return String.format(Locale.US, "%.1fh", s / 3600f);
+    private static String fmtSecs(long ms) {
+        if (ms >= 3_600_000L) {
+            return String.format(Locale.US, "%.1fh", ms / 3_600_000f);
         }
-        return String.format(Locale.US, "%.0fmin", s / 60f);
+        if (ms >= 60_000L) {
+            return String.format(Locale.US, "%.0fmin", ms / 60_000f);
+        }
+        return String.format(Locale.US, "%ds", ms / 1000L);
     }
 
     private void appendLog(String line) {
