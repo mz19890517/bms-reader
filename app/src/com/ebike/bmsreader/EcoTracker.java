@@ -47,6 +47,18 @@ public class EcoTracker implements BmsClient.Listener {
     private static final float MIN_KMH = 1.5f;
     /** 路段平均速度超过该值明显异常(GPS 跳点),丢弃。 */
     private static final float MAX_KMH = 160f;
+    /** 无功率且速度低于该值推断为步行;高于该值推断为滑行(下坡等),两者都不记录。 */
+    private static final float WALK_MAX_KMH = 8f;
+    /** 低速时功率低于该值(仪表/控制器待机)仍按步行处理,避免推车被当成骑行。 */
+    private static final float WALK_MAX_W = 30f;
+
+    /** 运动状态。 */
+    public static final int MODE_UNKNOWN = 0;
+    public static final int MODE_IDLE = 1;
+    public static final int MODE_RIDING = 2;
+    public static final int MODE_WALKING = 3;
+    public static final int MODE_COASTING = 4;
+
     /** 当前速度显示:最近一次定位超过这个时间就认为失效。 */
     private static final long CUR_SPEED_FRESH_MS = 3000L;
     /** 无 GPS 定位超过这个时间,暂存能量作废。 */
@@ -72,6 +84,8 @@ public class EcoTracker implements BmsClient.Listener {
         public float curKmh = -1;
         public boolean gpsRunning;
         public boolean gpsFresh;
+        /** 当前运动状态:MODE_*。 */
+        public int mode = MODE_UNKNOWN;
 
         Stats() {
             for (int i = 0; i < BIN_COUNT; i++) {
@@ -107,6 +121,7 @@ public class EcoTracker implements BmsClient.Listener {
     private long lastUiPostAt;
     private boolean dirty;
     private long lastSaveAt;
+    private long lastWidgetAt;
 
     private EcoTracker(Context appContext) {
         this.ctx = appContext;
@@ -179,9 +194,11 @@ public class EcoTracker implements BmsClient.Listener {
     private void onGpsFix(Location loc) {
         long now = SystemClock.elapsedRealtime();
         boolean attributed = false;
+        int newMode;
         synchronized (lock) {
             float cur = loc.hasSpeed() ? loc.getSpeed() * 3.6f : -1f;
             stats.curKmh = cur;
+            newMode = stats.mode;
             if (lastFix != null) {
                 long gap = now - lastFixAt;
                 double dist = lastFix.distanceTo(loc);
@@ -189,24 +206,38 @@ public class EcoTracker implements BmsClient.Listener {
                 boolean lastAccOk = !lastFix.hasAccuracy() || lastFix.getAccuracy() <= MAX_ACCURACY_M;
                 if (gap >= MIN_FIX_GAP_MS && gap <= MAX_FIX_GAP_MS && accuracyOk && lastAccOk) {
                     float avgKmh = (float) (dist / (gap / 1000.0) * 3.6);
-                    if (avgKmh >= MIN_KMH && avgKmh <= MAX_KMH && dist >= MIN_SEGMENT_M) {
-                        if (pendingWh > 0f) {
+                    // 该段平均功率(能量已按 BMS 报文积攒在这里)
+                    float segPowerW = pendingWh * 3_600_000f / gap;
+                    if (avgKmh < MIN_KMH) {
+                        // 静止:原地耗电不属于任何速度档
+                        newMode = MODE_IDLE;
+                        pendingWh = 0f;
+                    } else if (avgKmh > MAX_KMH) {
+                        // GPS 跳点,整段不可信
+                        pendingWh = 0f;
+                    } else if (segPowerW >= MIN_DISCHARGE_W
+                            && (avgKmh > WALK_MAX_KMH || segPowerW >= WALK_MAX_W)) {
+                        // 有速度且确有驱动功率 = 骑行,才记录
+                        newMode = MODE_RIDING;
+                        if (dist >= MIN_SEGMENT_M) {
                             int idx = binIndex(avgKmh);
                             Bucket b = stats.bins[idx];
                             b.wh += pendingWh;
                             b.km += (float) (dist / 1000.0);
                             b.secs += gap;
-                            pendingWh = 0f;
                             attributed = true;
                             recomputeBestLocked();
                             dirty = true;
                         }
-                    } else if (avgKmh < MIN_KMH) {
-                        // 静止/推行:原地耗电不属于任何速度档,直接丢弃
+                        pendingWh = 0f;
+                    } else {
+                        // 没有驱动功率:低速=步行/推车,高速=滑行,都不记录
+                        newMode = avgKmh <= WALK_MAX_KMH ? MODE_WALKING : MODE_COASTING;
                         pendingWh = 0f;
                     }
                 } else if (gap > MAX_FIX_GAP_MS) {
                     // 定位断档,这段能量不可信
+                    newMode = MODE_UNKNOWN;
                     pendingWh = 0f;
                 }
             }
@@ -214,6 +245,19 @@ public class EcoTracker implements BmsClient.Listener {
             lastFixAt = now;
             stats.gpsRunning = gps.isRunning();
             stats.gpsFresh = true;
+            stats.mode = newMode;
+        }
+        // 小部件速度串流:5 秒刷一次,避免过于频繁
+        if (now - lastWidgetAt > 5000L) {
+            lastWidgetAt = now;
+            float kmh;
+            int mode;
+            synchronized (lock) {
+                kmh = stats.curKmh;
+                mode = stats.mode;
+            }
+            WidgetState.saveSpeed(ctx, kmh, mode);
+            BmsWidgetProvider.refreshAll(ctx);
         }
         fireUi(false);
         if (attributed) {
@@ -272,6 +316,37 @@ public class EcoTracker implements BmsClient.Listener {
     static String binLabel(int i) {
         int lo = i * BIN_KMH;
         return i == BIN_COUNT - 1 ? lo + "+km/h" : lo + "-" + (lo + BIN_KMH) + "km/h";
+    }
+
+    static String modeLabel(int mode) {
+        switch (mode) {
+            case MODE_RIDING:
+                return "骑行中(统计中)";
+            case MODE_WALKING:
+                return "步行中(不记录)";
+            case MODE_COASTING:
+                return "滑行(不记录)";
+            case MODE_IDLE:
+                return "静止";
+            default:
+                return "等待GPS定位";
+        }
+    }
+
+    /** 小部件用的短文案。 */
+    static String modeLabelShort(int mode) {
+        switch (mode) {
+            case MODE_RIDING:
+                return "骑行";
+            case MODE_WALKING:
+                return "步行";
+            case MODE_COASTING:
+                return "滑行";
+            case MODE_IDLE:
+                return "静止";
+            default:
+                return "--";
+        }
     }
 
     public void reset() {
@@ -405,6 +480,7 @@ public class EcoTracker implements BmsClient.Listener {
             s.gpsRunning = gps.isRunning();
             s.gpsFresh = lastFixAt != 0 && now - lastFixAt <= CUR_SPEED_FRESH_MS;
             s.curKmh = (s.gpsFresh && stats.curKmh >= MIN_KMH) ? stats.curKmh : -1;
+            s.mode = s.gpsFresh ? stats.mode : MODE_UNKNOWN;
         }
         return s;
     }

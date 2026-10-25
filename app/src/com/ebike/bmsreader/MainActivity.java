@@ -46,6 +46,13 @@ public class MainActivity extends android.app.Activity implements BmsClient.List
     private final StringBuilder logLines = new StringBuilder();
     private LinearLayout ecoBox;
     private TextView ecoStateView;
+    private TextView speedView;
+    private TextView speedModeView;
+    private Button batteryTab;
+    private Button ecoTab;
+    private ScrollView batteryScroll;
+    private ScrollView ecoScroll;
+    private int currentTab;
 
     private final List<BmsClient.Found> devices = new ArrayList<>();
 
@@ -194,15 +201,44 @@ public class MainActivity extends android.app.Activity implements BmsClient.List
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(0xFF101418);
-        root.setPadding(dp(16), dp(12), dp(16), dp(12));
+        root.setPadding(dp(16), dp(12), dp(16), dp(0));
 
         TextView title = text("电池蓝牙信息查看器", 20, 0xFF4FC3F7);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         root.addView(title);
 
+        // -------- 分页标签 --------
+        LinearLayout tabRow = new LinearLayout(this);
+        tabRow.setOrientation(LinearLayout.HORIZONTAL);
+        tabRow.setPadding(0, dp(8), 0, dp(4));
+        batteryTab = new Button(this);
+        batteryTab.setText("电池信息");
+        batteryTab.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                selectTab(0);
+            }
+        });
+        tabRow.addView(batteryTab, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        ecoTab = new Button(this);
+        ecoTab.setText("省电分析");
+        ecoTab.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                selectTab(1);
+            }
+        });
+        tabRow.addView(ecoTab, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        root.addView(tabRow);
+
+        // -------- 电池信息页 --------
+        LinearLayout batteryContent = new LinearLayout(this);
+        batteryContent.setOrientation(LinearLayout.VERTICAL);
+        batteryContent.setPadding(0, dp(4), 0, dp(12));
+
         statusView = text("正在初始化…", 14, 0xFFB0BEC5);
         statusView.setPadding(0, dp(6), 0, dp(8));
-        root.addView(statusView);
+        batteryContent.addView(statusView);
 
         LinearLayout btnRow = new LinearLayout(this);
         btnRow.setOrientation(LinearLayout.HORIZONTAL);
@@ -231,7 +267,7 @@ public class MainActivity extends android.app.Activity implements BmsClient.List
             }
         });
         btnRow.addView(disconnectBtn, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        root.addView(btnRow);
+        batteryContent.addView(btnRow);
 
         LinearLayout autoRow = new LinearLayout(this);
         autoRow.setOrientation(LinearLayout.HORIZONTAL);
@@ -253,11 +289,11 @@ public class MainActivity extends android.app.Activity implements BmsClient.List
             }
         });
         autoRow.addView(keepAliveBtn, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        root.addView(autoRow);
+        batteryContent.addView(autoRow);
 
         lastDeviceView = text("上次设备: 无", 13, 0xFF90A4AE);
         lastDeviceView.setPadding(0, dp(6), 0, dp(0));
-        root.addView(lastDeviceView);
+        batteryContent.addView(lastDeviceView);
 
         Button widgetBtn = new Button(this);
         widgetBtn.setText("添加桌面小部件");
@@ -267,7 +303,7 @@ public class MainActivity extends android.app.Activity implements BmsClient.List
                 new android.app.AlertDialog.Builder(MainActivity.this)
                         .setTitle("添加桌面小部件")
                         .setMessage("长按桌面空白处 → 选择「小组件」→ 找到「电池蓝牙」→ 拖到桌面上。\n\n"
-                                + "连接电池后,小部件会实时显示电量、充放电状态和电压电流。")
+                                + "连接电池后,小部件会实时显示电量、当前速度、充放电状态和电压电流。")
                         .setPositiveButton("知道了", null)
                         .show();
             }
@@ -275,37 +311,85 @@ public class MainActivity extends android.app.Activity implements BmsClient.List
         LinearLayout.LayoutParams wlp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         wlp.topMargin = dp(6);
-        root.addView(widgetBtn, wlp);
+        batteryContent.addView(widgetBtn, wlp);
 
         deviceBox = new LinearLayout(this);
         deviceBox.setOrientation(LinearLayout.VERTICAL);
-        root.addView(deviceBox);
+        batteryContent.addView(deviceBox);
 
         TextView dataTitle = text("实时数据", 16, 0xFF80CBC4);
         dataTitle.setPadding(0, dp(14), 0, dp(4));
-        root.addView(dataTitle);
+        batteryContent.addView(dataTitle);
 
         dataBox = new LinearLayout(this);
         dataBox.setOrientation(LinearLayout.VERTICAL);
         dataBox.setPadding(dp(12), dp(12), dp(12), dp(12));
         dataBox.setBackgroundColor(0xFF1B2229);
-        root.addView(dataBox);
+        batteryContent.addView(dataBox);
         renderEmpty();
 
-        // -------- 速度省电分析区块 --------
-        TextView ecoTitle = text("速度省电分析", 16, 0xFF80CBC4);
-        ecoTitle.setPadding(0, dp(14), 0, dp(4));
-        root.addView(ecoTitle);
+        diagView = text("诊断: 尚未开始", 13, 0xFFFFB74D);
+        diagView.setPadding(0, dp(10), 0, 0);
+        batteryContent.addView(diagView);
+
+        TextView logTitle = text("通信日志", 16, 0xFF80CBC4);
+        logTitle.setPadding(0, dp(14), 0, dp(4));
+        batteryContent.addView(logTitle);
+
+        logView = text("", 11, 0xFF78909C);
+        logView.setBackgroundColor(0xFF161B20);
+        logView.setPadding(dp(10), dp(10), dp(10), dp(10));
+        batteryContent.addView(logView);
+
+        batteryScroll = new ScrollView(this);
+        batteryScroll.addView(batteryContent);
+
+        // -------- 省电分析页 --------
+        LinearLayout ecoContent = new LinearLayout(this);
+        ecoContent.setOrientation(LinearLayout.VERTICAL);
+        ecoContent.setPadding(0, dp(4), 0, dp(12));
+
+        LinearLayout speedCard = new LinearLayout(this);
+        speedCard.setOrientation(LinearLayout.VERTICAL);
+        speedCard.setGravity(Gravity.CENTER_HORIZONTAL);
+        speedCard.setPadding(dp(12), dp(14), dp(12), dp(12));
+        speedCard.setBackgroundColor(0xFF1B2229);
+
+        LinearLayout speedRow = new LinearLayout(this);
+        speedRow.setOrientation(LinearLayout.HORIZONTAL);
+        speedRow.setGravity(Gravity.CENTER_VERTICAL);
+        speedView = text("--", 56, 0xFF4FC3F7);
+        speedView.setTypeface(Typeface.DEFAULT_BOLD);
+        speedRow.addView(speedView);
+        TextView speedUnit = text("km/h", 18, 0xFF80CBC4);
+        speedUnit.setPadding(dp(6), 0, 0, dp(8));
+        speedUnit.setGravity(Gravity.BOTTOM);
+        speedRow.addView(speedUnit);
+        speedCard.addView(speedRow);
+
+        speedModeView = text("等待GPS定位", 14, 0xFF90A4AE);
+        speedModeView.setGravity(Gravity.CENTER);
+        speedCard.addView(speedModeView);
+        ecoContent.addView(speedCard);
+
+        TextView ecoPad = text("说明:只有「有放电功率」的骑行才会统计;步行/滑行/静止不记录。速度来自手机GPS。",
+                12, 0xFF78909C);
+        ecoPad.setPadding(0, dp(8), 0, dp(6));
+        ecoContent.addView(ecoPad);
+
+        TextView ecoTitle = text("各速度区间能耗", 16, 0xFF80CBC4);
+        ecoTitle.setPadding(0, dp(6), 0, dp(4));
+        ecoContent.addView(ecoTitle);
 
         ecoBox = new LinearLayout(this);
         ecoBox.setOrientation(LinearLayout.VERTICAL);
         ecoBox.setPadding(dp(12), dp(12), dp(12), dp(12));
         ecoBox.setBackgroundColor(0xFF1B2229);
-        root.addView(ecoBox);
+        ecoContent.addView(ecoBox);
 
         ecoStateView = text("", 12, 0xFF78909C);
         ecoStateView.setPadding(0, dp(6), 0, 0);
-        root.addView(ecoStateView);
+        ecoContent.addView(ecoStateView);
 
         Button ecoClearBtn = new Button(this);
         ecoClearBtn.setText("清零统计数据");
@@ -327,25 +411,48 @@ public class MainActivity extends android.app.Activity implements BmsClient.List
                         .show();
             }
         });
-        root.addView(ecoClearBtn, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        clp.topMargin = dp(8);
+        ecoContent.addView(ecoClearBtn, clp);
 
-        diagView = text("诊断: 尚未开始", 13, 0xFFFFB74D);
-        diagView.setPadding(0, dp(10), 0, 0);
-        root.addView(diagView);
+        ecoScroll = new ScrollView(this);
+        ecoScroll.addView(ecoContent);
 
-        TextView logTitle = text("通信日志", 16, 0xFF80CBC4);
-        logTitle.setPadding(0, dp(14), 0, dp(4));
-        root.addView(logTitle);
+        android.widget.FrameLayout pages = new android.widget.FrameLayout(this);
+        pages.addView(batteryScroll);
+        pages.addView(ecoScroll);
+        root.addView(pages, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
-        logView = text("", 11, 0xFF78909C);
-        logView.setBackgroundColor(0xFF161B20);
-        logView.setPadding(dp(10), dp(10), dp(10), dp(10));
-        root.addView(logView);
+        selectTab(0);
+        return root;
+    }
 
-        ScrollView scroll = new ScrollView(this);
-        scroll.addView(root);
-        return scroll;
+    /** 切换分页:0=电池信息 1=省电分析。 */
+    private void selectTab(int tab) {
+        currentTab = tab;
+        if (batteryScroll != null) {
+            batteryScroll.setVisibility(tab == 0 ? View.VISIBLE : View.GONE);
+        }
+        if (ecoScroll != null) {
+            ecoScroll.setVisibility(tab == 1 ? View.VISIBLE : View.GONE);
+        }
+        styleTab(batteryTab, tab == 0);
+        styleTab(ecoTab, tab == 1);
+        if (tab == 1) {
+            updateEcoUi(EcoTracker.get(this).snapshot());
+            ecoTracker.ensureGps();
+        }
+    }
+
+    private void styleTab(Button b, boolean active) {
+        if (b == null) {
+            return;
+        }
+        b.setTextColor(active ? 0xFF4FC3F7 : 0xFF90A4AE);
+        b.setTypeface(active ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
+        b.setBackgroundColor(active ? 0xFF1B2229 : 0xFF101418);
     }
 
     private void onScanClicked() {
@@ -654,9 +761,28 @@ public class MainActivity extends android.app.Activity implements BmsClient.List
         if (ecoBox == null || ecoStateView == null) {
             return;
         }
-        ecoBox.removeAllViews();
 
-        ecoBox.addView(text("说明:骑行时自动记录各速度档的实际能耗,累计越多越准。(速度来自手机GPS,需允许定位)", 12, 0xFF78909C));
+        // 大号当前速度
+        if (speedView != null) {
+            if (s.gpsFresh && s.curKmh > 0) {
+                speedView.setText(String.format(Locale.US, "%.0f", s.curKmh));
+                speedView.setTextColor(modeColor(s.mode));
+            } else {
+                speedView.setText(s.gpsRunning ? "0" : "--");
+                speedView.setTextColor(0xFF78909C);
+            }
+        }
+        if (speedModeView != null) {
+            speedModeView.setText(EcoTracker.modeLabel(s.mode));
+            speedModeView.setTextColor(modeColor(s.mode));
+        }
+
+        // 省电页没显示时可跳过表格重建,切回去时 selectTab 会立即刷新
+        if (currentTab != 1) {
+            return;
+        }
+
+        ecoBox.removeAllViews();
 
         // 表头
         LinearLayout head = new LinearLayout(this);
@@ -724,17 +850,38 @@ public class MainActivity extends android.app.Activity implements BmsClient.List
         if (!s.gpsRunning) {
             stateLine = String.format(Locale.US, "GPS未启动(请给本App定位权限) · 累计 %.2f km / %s",
                     s.totalKm, fmtSecs(s.totalSecs));
-        } else if (s.curKmh > 0) {
-            stateLine = String.format(Locale.US, "骑行统计中:当前 %.0f km/h · 累计 %.2f km / %s",
-                    s.curKmh, s.totalKm, fmtSecs(s.totalSecs));
-        } else if (s.gpsFresh) {
-            stateLine = String.format(Locale.US, "未骑行(当前静止) · 累计 %.2f km / %s",
+        } else if (!s.gpsFresh) {
+            stateLine = String.format(Locale.US, "等待GPS定位… · 累计 %.2f km / %s",
+                    s.totalKm, fmtSecs(s.totalSecs));
+        } else if (s.mode == EcoTracker.MODE_RIDING) {
+            stateLine = String.format(Locale.US, "骑行统计中 · 累计 %.2f km / %s",
+                    s.totalKm, fmtSecs(s.totalSecs));
+        } else if (s.mode == EcoTracker.MODE_WALKING) {
+            stateLine = String.format(Locale.US, "步行/推车中,不记录 · 累计 %.2f km / %s",
+                    s.totalKm, fmtSecs(s.totalSecs));
+        } else if (s.mode == EcoTracker.MODE_COASTING) {
+            stateLine = String.format(Locale.US, "滑行中(无电门),不记录 · 累计 %.2f km / %s",
                     s.totalKm, fmtSecs(s.totalSecs));
         } else {
-            stateLine = String.format(Locale.US, "等待GPS定位… · 累计 %.2f km / %s",
+            stateLine = String.format(Locale.US, "静止 · 累计 %.2f km / %s",
                     s.totalKm, fmtSecs(s.totalSecs));
         }
         ecoStateView.setText(stateLine);
+    }
+
+    private static int modeColor(int mode) {
+        switch (mode) {
+            case EcoTracker.MODE_RIDING:
+                return 0xFF9CCC65;
+            case EcoTracker.MODE_WALKING:
+                return 0xFFFFB74D;
+            case EcoTracker.MODE_COASTING:
+                return 0xFF4FC3F7;
+            case EcoTracker.MODE_IDLE:
+                return 0xFF90A4AE;
+            default:
+                return 0xFF78909C;
+        }
     }
 
     private static String fmtSecs(long ms) {

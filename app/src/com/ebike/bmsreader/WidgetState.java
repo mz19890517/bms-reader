@@ -23,6 +23,12 @@ public final class WidgetState {
     private static final String K_PROT = "prot";
     private static final String K_TIME = "time";
     private static final String K_NAME = "name";
+    private static final String K_SPEED = "speed";
+    private static final String K_SPEED_MODE = "speed_mode";
+    private static final String K_SPEED_TIME = "speed_time";
+
+    /** 速度数据超过这个时间就认为失效。 */
+    public static final long SPEED_STALE_MS = 10_000L;
 
     /** 超过这个时间就认为数据过期,小部件显示"等待连接"。 */
     public static final long STALE_MS = 90_000L;
@@ -129,6 +135,28 @@ public final class WidgetState {
 
     public static String deviceName(Context ctx) {
         return sp(ctx).getString(K_NAME, "");
+    }
+
+    /** GPS 速度单独存(与 BMS 快照分开),小部件直接展示。 */
+    public static void saveSpeed(Context ctx, float kmh, int mode) {
+        sp(ctx).edit()
+                .putFloat(K_SPEED, kmh)
+                .putInt(K_SPEED_MODE, mode)
+                .putLong(K_SPEED_TIME, System.currentTimeMillis())
+                .apply();
+    }
+
+    public static boolean isSpeedFresh(Context ctx) {
+        long t = sp(ctx).getLong(K_SPEED_TIME, 0L);
+        return t > 0 && System.currentTimeMillis() - t < SPEED_STALE_MS;
+    }
+
+    public static float speed(Context ctx) {
+        return sp(ctx).getFloat(K_SPEED, -1f);
+    }
+
+    public static int speedMode(Context ctx) {
+        return sp(ctx).getInt(K_SPEED_MODE, 0);
     }
 
     private static SharedPreferences sp(Context ctx) {

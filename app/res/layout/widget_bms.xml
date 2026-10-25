@@ -21,10 +21,20 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="2dp"
-        android:textSize="34sp"
+        android:textSize="32sp"
         android:textStyle="bold"
         android:textColor="#66BB6A"
         android:text="--" />
+
+    <TextView
+        android:id="@+id/w_speed"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textSize="18sp"
+        android:textStyle="bold"
+        android:textColor="#4FC3F7"
+        android:maxLines="1"
+        android:text="速度 -- km/h" />
 
     <TextView
         android:id="@+id/w_state"

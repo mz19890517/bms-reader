@@ -38,6 +38,7 @@ public class BmsWidgetProvider extends AppWidgetProvider {
             v.setTextViewText(R.id.w_state, "自检");
             v.setTextViewText(R.id.w_detail, "0.0V");
             v.setTextViewText(R.id.w_name, "x");
+            v.setTextViewText(R.id.w_speed, "速度 25 km/h");
             v.setTextColor(R.id.w_soc, 0xFFFFFFFF);
             v.apply(ctx, (android.view.ViewGroup) null);
             android.util.Log.i("BmsReader", "widget self-check OK");
@@ -96,6 +97,7 @@ public class BmsWidgetProvider extends AppWidgetProvider {
 
     static void render(Context ctx, AppWidgetManager mgr, int id) {
         RemoteViews v = new RemoteViews(ctx.getPackageName(), R.layout.widget_bms);
+        renderSpeed(ctx, v);
         boolean fresh = WidgetState.isFresh(ctx);
         int soc = WidgetState.soc(ctx);
 
@@ -137,6 +139,20 @@ public class BmsWidgetProvider extends AppWidgetProvider {
 
         v.setOnClickPendingIntent(R.id.w_root, openApp(ctx));
         mgr.updateAppWidget(id, v);
+    }
+
+    /** 速度行:GPS 每秒在更,小部件靠 5 秒刷新和 BMS 数据一起更新。 */
+    private static void renderSpeed(Context ctx, RemoteViews v) {
+        float spd = WidgetState.speed(ctx);
+        if (WidgetState.isSpeedFresh(ctx) && spd >= 0) {
+            int mode = WidgetState.speedMode(ctx);
+            String modeText = EcoTracker.modeLabelShort(mode);
+            v.setTextViewText(R.id.w_speed, String.format(Locale.US, "%.0f km/h · %s", spd, modeText));
+            v.setTextColor(R.id.w_speed, mode == EcoTracker.MODE_RIDING ? 0xFF4FC3F7 : 0xFF90A4AE);
+        } else {
+            v.setTextViewText(R.id.w_speed, "速度 -- km/h");
+            v.setTextColor(R.id.w_speed, 0xFF78909C);
+        }
     }
 
     private static int socColor(int soc) {
