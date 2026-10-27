@@ -49,8 +49,12 @@ public class EcoTracker implements BmsClient.Listener {
     private static final float MAX_KMH = 160f;
     /** 无功率且速度低于该值推断为步行;高于该值推断为滑行(下坡等),两者都不记录。 */
     private static final float WALK_MAX_KMH = 8f;
-    /** 低速时功率低于该值(仪表/控制器待机)仍按步行处理,避免推车被当成骑行。 */
-    private static final float WALK_MAX_W = 30f;
+    /** 分类窗口:累计这么久才判一次状态,避免单段噪声把骑行误判成步行/滑行。 */
+    private static final long WINDOW_MS = 4000L;
+    /** 窗口平均功率达到该值才认定骑行(约0.2A@48V;待机电流远低于此)。 */
+    private static final float RIDE_MIN_W = 10f;
+    /** 已处于骑行态时,窗口平均功率仍大于该值就继续骑行(迟滞,防抖)。 */
+    private static final float RIDE_HOLD_W = 3f;
 
     /** 运动状态。 */
     public static final int MODE_UNKNOWN = 0;
@@ -118,6 +122,10 @@ public class EcoTracker implements BmsClient.Listener {
     private long lastFixAt;
     private long lastPowerAt;
     private float pendingWh;
+    /** 分类窗口内累计的能量/位移/时长,攒够 WINDOW_MS 才判定一次。 */
+    private float winWh;
+    private double winDist;
+    private long winMs;
     private long lastUiPostAt;
     private boolean dirty;
     private long lastSaveAt;
@@ -194,52 +202,56 @@ public class EcoTracker implements BmsClient.Listener {
     private void onGpsFix(Location loc) {
         long now = SystemClock.elapsedRealtime();
         boolean attributed = false;
-        int newMode;
         synchronized (lock) {
             float cur = loc.hasSpeed() ? loc.getSpeed() * 3.6f : -1f;
             stats.curKmh = cur;
-            newMode = stats.mode;
+            int newMode = stats.mode;
             if (lastFix != null) {
                 long gap = now - lastFixAt;
                 double dist = lastFix.distanceTo(loc);
                 boolean accuracyOk = !loc.hasAccuracy() || loc.getAccuracy() <= MAX_ACCURACY_M;
                 boolean lastAccOk = !lastFix.hasAccuracy() || lastFix.getAccuracy() <= MAX_ACCURACY_M;
-                if (gap >= MIN_FIX_GAP_MS && gap <= MAX_FIX_GAP_MS && accuracyOk && lastAccOk) {
-                    float avgKmh = (float) (dist / (gap / 1000.0) * 3.6);
-                    // 该段平均功率(能量已按 BMS 报文积攒在这里)
-                    float segPowerW = pendingWh * 3_600_000f / gap;
-                    if (avgKmh < MIN_KMH) {
-                        // 静止:原地耗电不属于任何速度档
+                if (gap > MAX_FIX_GAP_MS) {
+                    // 定位断档,能量与窗口都不可信
+                    newMode = MODE_UNKNOWN;
+                    pendingWh = 0f;
+                    resetWinLocked();
+                } else if (gap >= MIN_FIX_GAP_MS && accuracyOk && lastAccOk) {
+                    // 能量并入窗口(不再按单段清零,单段功率噪声大)
+                    winWh += pendingWh;
+                    pendingWh = 0f;
+                    winDist += dist;
+                    winMs += gap;
+                    float winKmh = (float) (winDist / (winMs / 1000.0) * 3.6);
+                    if (winKmh < MIN_KMH) {
+                        // 静止:窗口作废,原地耗电不属于任何速度档
                         newMode = MODE_IDLE;
-                        pendingWh = 0f;
-                    } else if (avgKmh > MAX_KMH) {
-                        // GPS 跳点,整段不可信
-                        pendingWh = 0f;
-                    } else if (segPowerW >= MIN_DISCHARGE_W
-                            && (avgKmh > WALK_MAX_KMH || segPowerW >= WALK_MAX_W)) {
-                        // 有速度且确有驱动功率 = 骑行,才记录
-                        newMode = MODE_RIDING;
-                        if (dist >= MIN_SEGMENT_M) {
-                            int idx = binIndex(avgKmh);
+                        resetWinLocked();
+                    } else if (winKmh > MAX_KMH) {
+                        // GPS 跳点,整个窗口不可信
+                        resetWinLocked();
+                    } else if (winMs >= WINDOW_MS) {
+                        float winPowerW = winWh * 3_600_000f / winMs;
+                        boolean wasRiding = stats.mode == MODE_RIDING;
+                        if (winPowerW >= (wasRiding ? RIDE_HOLD_W : RIDE_MIN_W)) {
+                            // 有速度且有放电功率 = 骑行,整个窗口一起归档
+                            newMode = MODE_RIDING;
+                            int idx = binIndex(winKmh);
                             Bucket b = stats.bins[idx];
-                            b.wh += pendingWh;
-                            b.km += (float) (dist / 1000.0);
-                            b.secs += gap;
+                            b.wh += winWh;
+                            b.km += (float) (winDist / 1000.0);
+                            b.secs += winMs;
                             attributed = true;
                             recomputeBestLocked();
                             dirty = true;
+                        } else {
+                            // 没有明显驱动功率:低速=步行/推车,高速=滑行,都不记录
+                            newMode = winKmh <= WALK_MAX_KMH ? MODE_WALKING : MODE_COASTING;
                         }
-                        pendingWh = 0f;
-                    } else {
-                        // 没有驱动功率:低速=步行/推车,高速=滑行,都不记录
-                        newMode = avgKmh <= WALK_MAX_KMH ? MODE_WALKING : MODE_COASTING;
-                        pendingWh = 0f;
+                        resetWinLocked();
                     }
-                } else if (gap > MAX_FIX_GAP_MS) {
-                    // 定位断档,这段能量不可信
-                    newMode = MODE_UNKNOWN;
-                    pendingWh = 0f;
                 }
+                // gap 太小或精度差的段:不并入窗口,能量留在 pendingWh 等下一段
             }
             lastFix = loc;
             lastFixAt = now;
@@ -263,6 +275,12 @@ public class EcoTracker implements BmsClient.Listener {
         if (attributed) {
             maybeSave();
         }
+    }
+
+    private void resetWinLocked() {
+        winWh = 0f;
+        winDist = 0;
+        winMs = 0;
     }
 
     private void fireUi(boolean force) {
