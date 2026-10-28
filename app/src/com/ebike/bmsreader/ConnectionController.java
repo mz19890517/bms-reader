@@ -7,7 +7,7 @@ import android.content.Intent;
 import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
-import Toast;
+import android.widget.Toast;
 
 /**
  * 连接编排:扫描流程(10 秒停扫 / 6 秒自动连首台)、断开流程、自动连开关、蓝牙检查。
