@@ -41,9 +41,9 @@ public class EcoTracker implements BmsClient.Listener {
     /** GPS 段:时长/精度/位移的可用范围。 */
     private static final long MAX_FIX_GAP_MS = 5000L;
     private static final long MIN_FIX_GAP_MS = 200L;
-    private static final float MAX_ACCURACY_M = 30f;
+    private static final float MAX_ACCURACY_M = 50f;
     private static final float MIN_SEGMENT_M = 0.5f;
-    /** 路段平均速度低于该值视为没在骑(停车/推行),丢弃该段能量。 */
+    /** 路段平均速度低于该值视为没在骑(停车/推行),丢弃该段能量。无多普勒时兜底用。 */
     private static final float MIN_KMH = 1.5f;
     /** 路段平均速度超过该值明显异常(GPS 跳点),丢弃。 */
     private static final float MAX_KMH = 160f;
@@ -51,10 +51,16 @@ public class EcoTracker implements BmsClient.Listener {
     private static final float WALK_MAX_KMH = 8f;
     /** 分类窗口:累计这么久才判一次状态,避免单段噪声把骑行误判成步行/滑行。 */
     private static final long WINDOW_MS = 4000L;
-    /** 窗口平均功率达到该值才认定骑行(约0.2A@48V;待机电流远低于此)。 */
-    private static final float RIDE_MIN_W = 10f;
+    /** 窗口平均功率达到该值才认定骑行(仪表/灯光待机电流远低于此,拧电门远高于此)。 */
+    private static final float RIDE_MIN_W = 15f;
     /** 已处于骑行态时,窗口平均功率仍大于该值就继续骑行(迟滞,防抖)。 */
     private static final float RIDE_HOLD_W = 3f;
+    /** 多普勒速度低于该值一律视为静止:滤掉位置漂移造成的假速度。 */
+    private static final float STATIC_DOPPLER_KMH = 2.0f;
+    /** 提前判静止所需的最短窗口。 */
+    private static final long STATIC_WIN_MS = 2000L;
+    /** 除窗口能量外,再参照最近这么长时间的放电功率,防 BMS 偶发断流误判。 */
+    private static final long POWER_RECENT_MS = 6000L;
 
     /** 运动状态。 */
     public static final int MODE_UNKNOWN = 0;
@@ -126,6 +132,14 @@ public class EcoTracker implements BmsClient.Listener {
     private float winWh;
     private double winDist;
     private long winMs;
+    /** 窗口内多普勒速度(芯片直接测速,静止≈0)累计,精度远高于位置差分。 */
+    private float winDopSum;
+    private int winDopN;
+    /** 最近功率环形缓冲:只用于状态判定,不参与能量统计。 */
+    private static final int POWER_BUF = 12;
+    private final long[] pwrT = new long[POWER_BUF];
+    private final float[] pwrW = new float[POWER_BUF];
+    private int pwrIdx;
     private long lastUiPostAt;
     private boolean dirty;
     private long lastSaveAt;
@@ -178,6 +192,7 @@ public class EcoTracker implements BmsClient.Listener {
         // 电流方向:负=放电。功率取放电功率。
         float watts = -info.current * info.totalVoltage;
         synchronized (lock) {
+            pushPowerLocked(now, watts);
             long dt = lastPowerAt == 0 ? 0 : now - lastPowerAt;
             lastPowerAt = now;
             if (dt > MAX_POWER_DT_MS) {
@@ -203,8 +218,8 @@ public class EcoTracker implements BmsClient.Listener {
         long now = SystemClock.elapsedRealtime();
         boolean attributed = false;
         synchronized (lock) {
-            float cur = loc.hasSpeed() ? loc.getSpeed() * 3.6f : -1f;
-            stats.curKmh = cur;
+            float dop = loc.hasSpeed() ? loc.getSpeed() * 3.6f : -1f;
+            stats.curKmh = dop;
             int newMode = stats.mode;
             if (lastFix != null) {
                 long gap = now - lastFixAt;
@@ -222,36 +237,57 @@ public class EcoTracker implements BmsClient.Listener {
                     pendingWh = 0f;
                     winDist += dist;
                     winMs += gap;
+                    if (dop >= 0) {
+                        winDopSum += dop;
+                        winDopN++;
+                    }
                     float winKmh = (float) (winDist / (winMs / 1000.0) * 3.6);
-                    if (winKmh < MIN_KMH) {
-                        // 静止:窗口作废,原地耗电不属于任何速度档
+                    float avgDop = winDopN > 0 ? winDopSum / winDopN : -1f;
+                    // 判"是否在动"优先信芯片测速:静止漂移不会变成假速度
+                    boolean stationary = avgDop >= 0 ? avgDop < STATIC_DOPPLER_KMH : winKmh < MIN_KMH;
+                    if (!stationary && winKmh > MAX_KMH) {
+                        // GPS 跳点:窗口作废,能量留给下个窗口
+                        pendingWh += winWh;
+                        resetWinLocked();
+                    } else if (stationary && winMs >= STATIC_WIN_MS) {
+                        // 真静止:原地耗电不属于任何速度档
                         newMode = MODE_IDLE;
                         resetWinLocked();
-                    } else if (winKmh > MAX_KMH) {
-                        // GPS 跳点,整个窗口不可信
-                        resetWinLocked();
                     } else if (winMs >= WINDOW_MS) {
-                        float winPowerW = winWh * 3_600_000f / winMs;
+                        // 功率判定:窗口积分能量 + 最近几秒实时功率,谁大信谁,
+                        // 这样 BMS 偶发断流(积分断档)不会误判成滑行
+                        float winPowerW = Math.max(winWh * 3_600_000f / winMs, recentPowerWLocked(now));
                         boolean wasRiding = stats.mode == MODE_RIDING;
                         if (winPowerW >= (wasRiding ? RIDE_HOLD_W : RIDE_MIN_W)) {
                             // 有速度且有放电功率 = 骑行,整个窗口一起归档
                             newMode = MODE_RIDING;
-                            int idx = binIndex(winKmh);
+                            float binKmh;
+                            double kmAdd;
+                            if (winDopN >= 2) {
+                                // 有芯片测速:速度和里程都按多普勒来,位置漂移会污染档位
+                                binKmh = avgDop;
+                                kmAdd = avgDop * (winMs / 3_600_000.0);
+                            } else {
+                                binKmh = winKmh;
+                                kmAdd = winDist / 1000.0;
+                            }
+                            int idx = binIndex(binKmh);
                             Bucket b = stats.bins[idx];
                             b.wh += winWh;
-                            b.km += (float) (winDist / 1000.0);
+                            b.km += (float) kmAdd;
                             b.secs += winMs;
                             attributed = true;
                             recomputeBestLocked();
                             dirty = true;
                         } else {
                             // 没有明显驱动功率:低速=步行/推车,高速=滑行,都不记录
-                            newMode = winKmh <= WALK_MAX_KMH ? MODE_WALKING : MODE_COASTING;
+                            float moveKmh = winDopN > 0 ? avgDop : winKmh;
+                            newMode = moveKmh <= WALK_MAX_KMH ? MODE_WALKING : MODE_COASTING;
                         }
                         resetWinLocked();
                     }
                 }
-                // gap 太小或精度差的段:不并入窗口,能量留在 pendingWh 等下一段
+                // 要么窗口尚未判定,要么 gap 太小/精度差:能量留在窗口,等下一段
             }
             lastFix = loc;
             lastFixAt = now;
@@ -265,7 +301,8 @@ public class EcoTracker implements BmsClient.Listener {
             float kmh;
             int mode;
             synchronized (lock) {
-                kmh = stats.curKmh;
+                kmh = (stats.curKmh >= STATIC_DOPPLER_KMH && stats.curKmh <= MAX_KMH)
+                        ? stats.curKmh : -1f;
                 mode = stats.mode;
             }
             WidgetState.saveSpeed(ctx, kmh, mode);
@@ -277,10 +314,33 @@ public class EcoTracker implements BmsClient.Listener {
         }
     }
 
+    private void pushPowerLocked(long now, float watts) {
+        pwrW[pwrIdx] = watts > 0 ? watts : 0f;
+        pwrT[pwrIdx] = now;
+        pwrIdx = (pwrIdx + 1) % POWER_BUF;
+    }
+
+    /** 最近 POWER_RECENT_MS 内的放电功率均值;缓冲里没有数据返回 0。 */
+    private float recentPowerWLocked(long now) {
+        long from = now - POWER_RECENT_MS;
+        float sum = 0f;
+        int n = 0;
+        for (int i = 0; i < POWER_BUF; i++) {
+            long t = pwrT[i];
+            if (t >= from && t <= now) {
+                sum += pwrW[i];
+                n++;
+            }
+        }
+        return n > 0 ? sum / n : 0f;
+    }
+
     private void resetWinLocked() {
         winWh = 0f;
         winDist = 0;
         winMs = 0;
+        winDopSum = 0f;
+        winDopN = 0;
     }
 
     private void fireUi(boolean force) {
@@ -497,7 +557,8 @@ public class EcoTracker implements BmsClient.Listener {
             s.totalKm = totalKm;
             s.gpsRunning = gps.isRunning();
             s.gpsFresh = lastFixAt != 0 && now - lastFixAt <= CUR_SPEED_FRESH_MS;
-            s.curKmh = (s.gpsFresh && stats.curKmh >= MIN_KMH) ? stats.curKmh : -1;
+            s.curKmh = (s.gpsFresh && stats.curKmh >= STATIC_DOPPLER_KMH && stats.curKmh <= MAX_KMH)
+                    ? stats.curKmh : -1;
             s.mode = s.gpsFresh ? stats.mode : MODE_UNKNOWN;
         }
         return s;
