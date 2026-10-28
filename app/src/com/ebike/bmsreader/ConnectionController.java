@@ -7,6 +7,7 @@ import android.content.Intent;
 import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
+import Toast;
 
 /**
  * 连接编排:扫描流程(10 秒停扫 / 6 秒自动连首台)、断开流程、自动连开关、蓝牙检查。
@@ -94,16 +95,16 @@ final class ConnectionController {
             hub.client().clearUserDisconnect();
             if (AutoLink.hasDevice(ctx)) {
                 BmsService.start(ctx);
-                android.widget.Toast.makeText(ctx,
-                        "会自动连接 " + AutoLink.describe(ctx), android.widget.Toast.LENGTH_SHORT).show();
+                Toast.makeText(ctx,
+                        "会自动连接 " + AutoLink.describe(ctx), Toast.LENGTH_SHORT).show();
             } else {
-                android.widget.Toast.makeText(ctx,
-                        "还没有连过设备,先扫描连接一次吧", android.widget.Toast.LENGTH_LONG).show();
+                Toast.makeText(ctx,
+                        "还没有连过设备,先扫描连接一次吧", Toast.LENGTH_LONG).show();
             }
         } else {
             BmsService.stop(ctx);
-            android.widget.Toast.makeText(ctx,
-                    "自动连接已关闭", android.widget.Toast.LENGTH_SHORT).show();
+            Toast.makeText(ctx,
+                    "自动连接已关闭", Toast.LENGTH_SHORT).show();
         }
         refreshAutoUi();
     }
@@ -128,14 +129,16 @@ final class ConnectionController {
             try {
                 ctx.startActivity(new Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
             } catch (Exception ignored) {
-                android.widget.Toast.makeText(ctx,
-                        "本机没有电池优化设置页", android.widget.Toast.LENGTH_SHORT).show();
+                Toast.makeText(ctx,
+                        "本机没有电池优化设置页", Toast.LENGTH_SHORT).show();
             }
         }
     }
 
-    /** Activity 销毁/离开时调用,扫描定时器不再触碰已销毁的界面。 */
+    /** Activity 销毁/离开时调用:定时器失效,并兜底停掉 BLE 扫描,
+     * 避免低功耗扫描没有任何东西去停,一直挂到进程被杀。 */
     void cancel() {
+        hub.client().stopScan();
         main.removeCallbacks(scanStopTask);
         main.removeCallbacks(autoConnectTask);
     }
