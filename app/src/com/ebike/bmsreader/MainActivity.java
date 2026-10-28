@@ -565,19 +565,14 @@ public class MainActivity extends android.app.Activity implements BmsClient.List
 
     @Override
     public void onDeviceFound(final String name, final String mac, final int rssi) {
-        runOnUiThread(new Runnable() {
-            @Override
-            public void run() {
-                for (BmsClient.Found f : devices) {
-                    if (f.mac.equals(mac)) {
-                        return;
-                    }
-                }
-                BmsClient.Found found = new BmsClient.Found(name, mac, rssi);
-                devices.add(found);
-                deviceBox.addView(makeDeviceRow(found));
+        for (BmsClient.Found f : devices) {
+            if (f.mac.equals(mac)) {
+                return;
             }
-        });
+        }
+        BmsClient.Found found = new BmsClient.Found(name, mac, rssi);
+        devices.add(found);
+        deviceBox.addView(makeDeviceRow(found));
     }
 
     private View makeDeviceRow(final BmsClient.Found found) {
@@ -603,56 +598,36 @@ public class MainActivity extends android.app.Activity implements BmsClient.List
     }
 
     @Override
-    public void onState(final String state) {
-        runOnUiThread(new Runnable() {
-            @Override
-            public void run() {
-                statusView.setText(state);
-            }
-        });
+    public void onState(String state) {
+        statusView.setText(state);
     }
 
     @Override
-    public void onDiag(final String diag) {
-        runOnUiThread(new Runnable() {
-            @Override
-            public void run() {
-                if (diag != null && !diag.isEmpty() && diagView != null) {
-                    diagView.setText("诊断: " + diag);
-                }
-            }
-        });
+    public void onDiag(String diag) {
+        if (diag != null && !diag.isEmpty() && diagView != null) {
+            diagView.setText("诊断: " + diag);
+        }
     }
 
     @Override
-    public void onError(final String message) {
-        runOnUiThread(new Runnable() {
-            @Override
-            public void run() {
-                Toast.makeText(MainActivity.this, message, Toast.LENGTH_SHORT).show();
-                appendLog("错误: " + message);
-            }
-        });
+    public void onError(String message) {
+        Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
+        appendLog("错误: " + message);
     }
 
     @Override
-    public void onCellVoltages(final List<Float> volts) {
-        runOnUiThread(new Runnable() {
+    public void onCellVoltages(List<Float> volts) {
+        if (volts.isEmpty()) {
+            return;
+        }
+        dataBox.post(new Runnable() {
             @Override
             public void run() {
-                if (volts.isEmpty()) {
-                    return;
-                }
-                dataBox.post(new Runnable() {
-                    @Override
-                    public void run() {
-                        // 单体电压单独一块,避免整页重绘
-                    }
-                });
-                lastCells = volts;
-                updateCellSection(volts);
+                // 单体电压单独一块,避免整页重绘
             }
         });
+        lastCells = volts;
+        updateCellSection(volts);
     }
 
     private List<Float> lastCells;
@@ -691,13 +666,8 @@ public class MainActivity extends android.app.Activity implements BmsClient.List
     }
 
     @Override
-    public void onBaseInfo(final BmsProtocol.BaseInfo info) {
-        runOnUiThread(new Runnable() {
-            @Override
-            public void run() {
-                renderInfo(info);
-            }
-        });
+    public void onBaseInfo(BmsProtocol.BaseInfo info) {
+        renderInfo(info);
     }
 
     private void renderInfo(BmsProtocol.BaseInfo info) {
@@ -895,24 +865,18 @@ public class MainActivity extends android.app.Activity implements BmsClient.List
     }
 
     private void appendLog(String line) {
-        if (line == null) {
+        if (line == null || logView == null) {
             return;
         }
-        final String text = line;
-        runOnUiThread(new Runnable() {
-            @Override
-            public void run() {
-                logLines.append(text).append('\n');
-                String[] all = logLines.toString().split("\n");
-                int from = Math.max(0, all.length - 40);
-                StringBuilder keep = new StringBuilder();
-                for (int i = from; i < all.length; i++) {
-                    keep.append(all[i]).append('\n');
-                }
-                logLines.setLength(0);
-                logLines.append(keep);
-                logView.setText(logLines.toString());
-            }
-        });
+        logLines.append(line).append('\n');
+        String[] all = logLines.toString().split("\n");
+        int from = Math.max(0, all.length - 40);
+        StringBuilder keep = new StringBuilder();
+        for (int i = from; i < all.length; i++) {
+            keep.append(all[i]).append('\n');
+        }
+        logLines.setLength(0);
+        logLines.append(keep);
+        logView.setText(logLines.toString());
     }
 }
