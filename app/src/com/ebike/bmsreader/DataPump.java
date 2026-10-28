@@ -6,7 +6,7 @@ import java.util.List;
 
 /**
  * Hub 的第 0 号监听者:负责"数据落地"副作用——
- * 小部件快照(WdigketState)、自动连设备记录(AutoLink)、
+ * 小部件快照(WidgetState)、自动连设备记录(AutoLink)、
  * 通知栏与前台服务保活(BmsService)。Hub 保证回调都在主线程。
  */
 final class DataPump implements BmsClient.Listener {
